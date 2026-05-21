@@ -12,10 +12,44 @@ from PySide6.QtWidgets import (
 )
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from qfluentwidgets import FluentWindow, FluentIcon as FIF
+from qfluentwidgets import (
+    ScrollArea,
+    SettingCardGroup,
+    SwitchSettingCard,
+    ComboBoxSettingCard,
+    PushSettingCard,
+    ExpandLayout,
+    FluentIcon as FIF,
+    ColorSettingCard,
+    FluentWindow,
+    setTheme,
+    Theme,
+    QConfig,
+    ConfigItem,
+    OptionsConfigItem,
+    ColorConfigItem,
+    OptionsValidator,
+)
+from PySide6.QtGui import QColor
 from ui_home_interface import Ui_HomeInterface
 from ui_analysis_gain_interface import Ui_AnalysisGainInterface  # 导入新生成的 UI
 from data_processor import DataProcessor
+
+
+class AppConfig(QConfig):
+    """应用配置类"""
+
+    # 绘图颜色
+    plotColor = ColorConfigItem("Plot", "Color", QColor(0, 0, 255))
+    # 归一化
+    isNormalization = ConfigItem("Plot", "IsNormalization", False)
+    # 输出格式
+    outputFormat = OptionsConfigItem(
+        "Output", "Format", "PNG", OptionsValidator(["PNG", "JPG", "PDF", "SVG"])
+    )
+
+
+cfg = AppConfig()
 
 
 class HomeInterface(QWidget, Ui_HomeInterface):
@@ -160,6 +194,89 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         self.canvas.draw()
 
 
+class SettingInterface(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+
+        # 使用垂直布局放置滚动区域
+        self.vBoxLayout = QVBoxLayout(self)
+        self.vBoxLayout.setContentsMargins(0, 0, 0, 0)
+
+        # 将原本继承的 ScrollArea 提取为成员变量
+        self.scrollArea = ScrollArea(self)
+        self.scrollArea.setWidgetResizable(True)
+        self.scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # 启用背景透明，使底层的 QWidget 主题白/黑背景可以透出来
+        self.scrollArea.setStyleSheet(
+            "QScrollArea { background-color: transparent; border: none; }"
+        )
+        self.scrollArea.viewport().setStyleSheet("background-color: transparent;")
+        self.vBoxLayout.addWidget(self.scrollArea)
+
+        self.scrollWidget = QWidget()
+        self.scrollWidget.setStyleSheet("QWidget { background-color: transparent; }")
+
+        self.expandLayout = ExpandLayout(self.scrollWidget)
+
+        # 1. 绘图设置组
+        self.plotGroup = SettingCardGroup("绘图配置", self.scrollWidget)
+
+        # 传入 cfg.plotColor 而不是直接传颜色
+        self.colorCard = ColorSettingCard(
+            cfg.plotColor,
+            FIF.PALETTE,
+            "线条颜色",
+            "设置默认绘图线条的颜色",
+            self.plotGroup,
+        )
+
+        # 传入 cfg.isNormalization
+        self.normCard = SwitchSettingCard(
+            FIF.TRANSPARENT,
+            "数据归一化",
+            "绘图前是否对数据进行归一化处理",
+            configItem=cfg.isNormalization,
+            parent=self.plotGroup,
+        )
+        self.plotGroup.addSettingCard(self.colorCard)
+        self.plotGroup.addSettingCard(self.normCard)
+
+        # 2. 输出设置组
+        self.outputGroup = SettingCardGroup("导出选项", self.scrollWidget)
+
+        self.pathCard = PushSettingCard(
+            "选择目录", FIF.FOLDER, "输出路径", "当前路径: ./output", self.outputGroup
+        )
+
+        # 传入 cfg.outputFormat
+        self.formatCard = ComboBoxSettingCard(
+            cfg.outputFormat,
+            FIF.PHOTO,
+            "图片格式",
+            "选择保存图片的后缀名",
+            ["PNG", "JPG", "PDF", "SVG"],
+            self.outputGroup,
+        )
+        self.outputGroup.addSettingCard(self.pathCard)
+        self.outputGroup.addSettingCard(self.formatCard)
+
+        # 将组添加到布局
+        self.expandLayout.addWidget(self.plotGroup)
+        self.expandLayout.addWidget(self.outputGroup)
+
+        self.scrollArea.setWidget(self.scrollWidget)
+        self.setObjectName("settingInterface")
+
+        # 连接信号
+        self.pathCard.clicked.connect(self.on_select_path)
+
+    def on_select_path(self):
+        path = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
+        if path:
+            self.pathCard.setContent(f"当前路径: {path}")
+
+
 class Window(FluentWindow):
     def __init__(self):
         super().__init__()
@@ -173,9 +290,7 @@ class Window(FluentWindow):
         self.gainInterface = AnalysisGainInterface(self.processor, self)  # 实例化新页面
         # self.homeInterface.setObjectName("analysisgaininterface")
 
-        self.settingInterface = QWidget()
-        self.settingInterface.setObjectName("settingInterface")
-        self.set_up_dummy_page(self.settingInterface, "设置页面")
+        self.settingInterface = SettingInterface(self)
 
         self.homeInterface.fileLoaded.connect(self.gainInterface.refresh_comboboxes)
 
@@ -184,15 +299,6 @@ class Window(FluentWindow):
 
         # 3. 设置窗口大小
         self.resize(900, 700)
-
-    def set_up_dummy_page(self, widget, text):
-        """给测试页面添加一些简单的内容"""
-        layout = QVBoxLayout(widget)
-        label = QLabel(text, widget)
-        label.setAlignment(Qt.AlignCenter)
-        # 设置一点样式
-        label.setStyleSheet("font: 30px 'Microsoft YaHei';")
-        layout.addWidget(label)
 
     def init_navigation(self):
         # 使用 addSubInterface 将页面添加到侧边导航栏
@@ -208,14 +314,11 @@ class Window(FluentWindow):
 
 
 if __name__ == "__main__":
-    # 适配高分屏缩放
-    # QApplication.setHighDpiScaleFactorRoundingPolicy(
-    #     Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    # )
-    # QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
-    # QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
-
     app = QApplication(sys.argv)
+
+    # 设置主题：Light（亮色）, DARK（深色）, AUTO（跟随系统）
+    setTheme(Theme.DARK)
+
     window = Window()
     window.show()
     sys.exit(app.exec())

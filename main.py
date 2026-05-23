@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QWidget,
     QVBoxLayout,
-    QLabel,
+    # QLabel,
     QFileDialog,
     QTableWidgetItem,
     QHeaderView,
@@ -29,10 +29,12 @@ from qfluentwidgets import (
     OptionsConfigItem,
     ColorConfigItem,
     OptionsValidator,
+    # ImageLabel,
 )
 from PySide6.QtGui import QColor
 from ui_home_interface import Ui_HomeInterface
 from ui_analysis_gain_interface import Ui_AnalysisGainInterface  # 导入新生成的 UI
+from ui_analysis_pattern_interface import Ui_AnalysisPatternInterface
 from data_processor import DataProcessor
 
 
@@ -194,6 +196,124 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         self.canvas.draw()
 
 
+class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
+    def __init__(self, processor: DataProcessor, parent=None):
+        super().__init__(parent=parent)
+        self.setupUi(self)
+        self.processor = processor
+
+        # 1. 初始化 ComboBox 选项
+        self.planeComboBox.addItems(
+            [
+                "Phi = 0°",
+                "Phi = 90°",
+                "Theta = 90°",
+            ]
+        )
+
+        # 2. 连接切换信号
+        self.planeComboBox.currentIndexChanged.connect(self.on_plane_changed)
+
+        # 3. 设置默认图片
+        self.update_schematic("assets/phi0.png")
+
+        # 布局 Matplotlib (极坐标)
+        self.figure = plt.figure(figsize=(5, 4), dpi=100)
+        self.ax = self.figure.add_subplot(111, projection="polar")
+        self.canvas = FigureCanvas(self.figure)
+        layout = QVBoxLayout(self.chartContainer)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.canvas)
+
+        # 初始状态下禁用绘制按钮
+        self.plotButton.setEnabled(False)
+        self.plotButton.clicked.connect(self.update_plot)
+
+    def refresh_comboboxes(self):
+        """当文件加载后，更新下拉列表并启用按钮"""
+        if self.processor.freq is not None:
+            self.freqComboBox.clear()
+            self.freqComboBox.addItems([str(f) for f in self.processor.freq])
+            # 启用绘制按钮
+            self.plotButton.setEnabled(True)
+
+    def on_plane_changed(self, index):
+        """根据索引切换图片"""
+        mapping = {
+            0: "assets/phi0.png",
+            1: "assets/phi90.png",
+            2: "assets/theta90.png",
+        }
+        image_path = mapping.get(index)
+        if image_path:
+            self.update_schematic(image_path)
+
+    def update_plot(self):
+        if self.processor.data_mea_amp is None:
+            return
+
+        freq_idx = self.freqComboBox.currentIndex()
+        plane_idx = self.planeComboBox.currentIndex()
+
+        self.ax.clear()
+        has_plot = False
+
+        # 根据选中的平面确定角度和数据索引
+        if plane_idx == 0:  # Phi = 0
+            angles = np.radians(self.processor.theta)
+            phi_idx = np.where(self.processor.phi == 0)[0][0]
+            label_suffix = "(Phi=0)"
+            d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
+            d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
+        elif plane_idx == 1:  # Phi = 90
+            angles = np.radians(self.processor.theta)
+            phi_idx = np.where(self.processor.phi == 90)[0][0]
+            label_suffix = "(Phi=90)"
+            d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
+            d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
+        else:  # Theta = 90
+            angles = np.radians(self.processor.phi)
+            theta_idx = np.where(self.processor.theta == 90)[0][0]
+            label_suffix = "(Theta=90)"
+            d_h = self.processor.data_mea_amp[0, 0, freq_idx, theta_idx, :]
+            d_v = self.processor.data_mea_amp[0, 1, freq_idx, theta_idx, :]
+
+        # 绘制
+        if self.checkBoxHori.isChecked():
+            self.ax.plot(angles, d_h, label=f"GainH {label_suffix}")
+            has_plot = True
+
+        if self.checkBoxVert.isChecked():
+            self.ax.plot(angles, d_v, label=f"GainV {label_suffix}")
+            has_plot = True
+
+        if self.checkBoxTotal.isChecked():
+            gain_total = 10 * np.log10(10 ** (d_h / 10) + 10 ** (d_v / 10))
+            self.ax.plot(
+                angles,
+                gain_total,
+                label=f"GainTotal {label_suffix}",
+                linewidth=2,
+                linestyle="--",
+            )
+            has_plot = True
+
+        if has_plot:
+            self.ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
+
+        self.ax.set_theta_zero_location("N")  # 0度向上
+        self.ax.set_theta_direction(-1)  # 顺时针
+        self.ax.set_title(f"Radiation Pattern at {self.freqComboBox.currentText()} MHz")
+        self.canvas.draw()
+
+    def update_schematic(self, path):
+        """更新 ImageLabel 的图片"""
+        # ImageLabel 会自动处理圆角和缩放
+        self.schematicLabel.setImage(path)
+        # 如果需要固定大小不拉伸，可以设置
+        self.schematicLabel.setFixedSize(150, 150)
+
+
 class SettingInterface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -211,7 +331,7 @@ class SettingInterface(QWidget):
         self.scrollArea.setStyleSheet(
             "QScrollArea { background-color: transparent; border: none; }"
         )
-        self.scrollArea.viewport().setStyleSheet("background-color: transparent;")
+        # self.scrollArea.viewport().setStyleSheet("background-color: transparent;")
         self.vBoxLayout.addWidget(self.scrollArea)
 
         self.scrollWidget = QWidget()
@@ -285,14 +405,13 @@ class Window(FluentWindow):
 
         # 1. 创建子页面
         self.homeInterface = HomeInterface(self.processor, self)
-        # self.homeInterface.setObjectName("homeInterface")
-
-        self.gainInterface = AnalysisGainInterface(self.processor, self)  # 实例化新页面
-        # self.homeInterface.setObjectName("analysisgaininterface")
+        self.gainInterface = AnalysisGainInterface(self.processor, self)
+        self.patternInterface = AnalysisPatternInterface(self.processor, self)
 
         self.settingInterface = SettingInterface(self)
 
         self.homeInterface.fileLoaded.connect(self.gainInterface.refresh_comboboxes)
+        self.homeInterface.fileLoaded.connect(self.patternInterface.refresh_comboboxes)
 
         # 2. 初始化导航栏
         self.init_navigation()
@@ -307,6 +426,9 @@ class Window(FluentWindow):
         self.addSubInterface(
             self.gainInterface, FIF.CHEVRON_RIGHT_MED, "增益分析"
         )  # 添加到导航
+        self.addSubInterface(
+            self.patternInterface, FIF.FILTER, "2D方向图"
+        )  # 添加到导航
         self.addSubInterface(self.settingInterface, FIF.SETTING, "设置")
 
         # 你还可以添加带有路由键的页面（如果需要像之前代码那样使用 routeKey）
@@ -317,7 +439,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     # 设置主题：Light（亮色）, DARK（深色）, AUTO（跟随系统）
-    setTheme(Theme.DARK)
+    setTheme(Theme.LIGHT)
 
     window = Window()
     window.show()

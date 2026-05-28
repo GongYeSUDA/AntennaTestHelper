@@ -3,7 +3,7 @@
 ################################################################################
 ## Form generated from reading UI file 'analysis_pattern_interface.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.11.1
+## Created by: Qt User Interface Compiler version 6.10.1
 ##
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
@@ -174,9 +174,9 @@ class Ui_AnalysisPatternInterface(object):
         self.freqLable.setText(QCoreApplication.translate("AnalysisPatternInterface", u"\u9891\u7387 (MHz):", None))
         self.planeLable.setText(QCoreApplication.translate("AnalysisPatternInterface", u"\u56fa\u5b9a\u5e73\u9762:", None))
         self.plotButton.setText(QCoreApplication.translate("AnalysisPatternInterface", u"\u7ed8\u5236\u56fe\u8868", None))
-        self.checkBoxHori.setText(QCoreApplication.translate("AnalysisPatternInterface", u"GainHorizontal", None))
-        self.checkBoxVert.setText(QCoreApplication.translate("AnalysisPatternInterface", u"GainVertical", None))
-        self.checkBoxTotal.setText(QCoreApplication.translate("AnalysisPatternInterface", u"GainTotal", None))
+        self.checkBoxHori.setText(QCoreApplication.translate("AnalysisPatternInterface", u"RealizedGainHorizontal", None))
+        self.checkBoxVert.setText(QCoreApplication.translate("AnalysisPatternInterface", u"RealizedGainVertical", None))
+        self.checkBoxTotal.setText(QCoreApplication.translate("AnalysisPatternInterface", u"RealizedGainTotal", None))
         self.schematicLabel.setText(QCoreApplication.translate("AnalysisPatternInterface", u"TextLabel", None))
     # retranslateUi
 

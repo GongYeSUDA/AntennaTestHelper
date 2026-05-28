@@ -153,8 +153,8 @@ class Ui_AnalysisGainInterface(object):
         self.phiLable.setText(QCoreApplication.translate("AnalysisGainInterface", u"Phi:", None))
         self.thetaLable.setText(QCoreApplication.translate("AnalysisGainInterface", u"Theta:", None))
         self.plotButton.setText(QCoreApplication.translate("AnalysisGainInterface", u"\u7ed8\u5236\u56fe\u8868", None))
-        self.checkBoxHori.setText(QCoreApplication.translate("AnalysisGainInterface", u"GainHorizontal", None))
-        self.checkBoxVert.setText(QCoreApplication.translate("AnalysisGainInterface", u"GainVertical", None))
-        self.checkBoxTotal.setText(QCoreApplication.translate("AnalysisGainInterface", u"GainTotal", None))
+        self.checkBoxHori.setText(QCoreApplication.translate("AnalysisGainInterface", u"RealizedGainHorizontal", None))
+        self.checkBoxVert.setText(QCoreApplication.translate("AnalysisGainInterface", u"RealizedGainVertical", None))
+        self.checkBoxTotal.setText(QCoreApplication.translate("AnalysisGainInterface", u"RealizedGainTotal", None))
     # retranslateUi
 

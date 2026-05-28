@@ -182,21 +182,21 @@
           <item>
            <widget class="CheckBox" name="checkBoxHori">
             <property name="text">
-             <string>GainHorizontal</string>
+             <string>RealizedGainHorizontal</string>
             </property>
            </widget>
           </item>
           <item>
            <widget class="CheckBox" name="checkBoxVert">
             <property name="text">
-             <string>GainVertical</string>
+             <string>RealizedGainVertical</string>
             </property>
            </widget>
           </item>
           <item>
            <widget class="CheckBox" name="checkBoxTotal">
             <property name="text">
-             <string>GainTotal</string>
+             <string>RealizedGainTotal</string>
             </property>
            </widget>
           </item>

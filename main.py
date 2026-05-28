@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QTableWidgetItem,
     QHeaderView,
+    QButtonGroup,
 )
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -35,6 +36,7 @@ from PySide6.QtGui import QColor
 from ui_home_interface import Ui_HomeInterface
 from ui_analysis_gain_interface import Ui_AnalysisGainInterface  # 导入新生成的 UI
 from ui_analysis_pattern_interface import Ui_AnalysisPatternInterface
+from ui_analysis_3dpattern_interface import Ui_Analysis3DPatternInterface
 from data_processor import DataProcessor
 
 
@@ -124,6 +126,9 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         self.setupUi(self)
         self.processor = processor
 
+        # 默认勾选 checkBoxTotal
+        self.checkBoxTotal.setChecked(True)
+
         # 布局 Matplotlib
 
         self.figure, self.ax = plt.subplots(figsize=(5, 4), dpi=100)
@@ -161,14 +166,14 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         # 1. 绘制水平极化 (Horizontal/Theta)
         if self.checkBoxHori.isChecked():
             gain_h = self.processor.data_mea_amp[0, 0, :, theta_idx, phi_idx]
-            self.ax.plot(freqs, gain_h, label="GainHorizontal")
+            self.ax.plot(freqs, gain_h, label="RealizedGainHorizontal")
             has_plot = True
 
         # 2. 绘制垂直极化 (Vertical/Phi)
         if self.checkBoxVert.isChecked():
             # 假设极化索引 1 是垂直极化
             gain_v = self.processor.data_mea_amp[0, 1, :, theta_idx, phi_idx]
-            self.ax.plot(freqs, gain_v, label="GainVertical")
+            self.ax.plot(freqs, gain_v, label="RealizedGainVertical")
             has_plot = True
 
         # 3. 绘制总增益 (Total Gain)
@@ -179,7 +184,11 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
             gain_total = 10 * np.log10(10 ** (h_db / 10) + 10 ** (v_db / 10))
 
             self.ax.plot(
-                freqs, gain_total, label="GainTotal", linewidth=2, linestyle="--"
+                freqs,
+                gain_total,
+                label="RealizedGainTotal",
+                linewidth=2,
+                linestyle="--",
             )
             has_plot = True
 
@@ -187,11 +196,11 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
             self.ax.legend()
 
         self.ax.set_title(
-            f"Gain vs Frequency (Phi={self.phiComboBox.currentText()}, Theta={self.thetaComboBox.currentText()})"
+            f"RealizedGain vs Frequency (Phi={self.phiComboBox.currentText()}, Theta={self.thetaComboBox.currentText()})"
         )
         self.ax.set_xlim([freqs[0], freqs[-1]])
         self.ax.set_xlabel("Frequency (MHz)")
-        self.ax.set_ylabel("Gain (dB)")
+        self.ax.set_ylabel("RealizedGain (dB)")
         self.ax.grid(True)
         self.canvas.draw()
 
@@ -216,6 +225,9 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
 
         # 3. 设置默认图片
         self.update_schematic("assets/phi0.png")
+
+        # 默认勾选 checkBoxTotal
+        self.checkBoxTotal.setChecked(True)
 
         # 布局 Matplotlib (极坐标)
         self.figure = plt.figure(figsize=(5, 4), dpi=100)
@@ -280,11 +292,11 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
 
         # 绘制
         if self.checkBoxHori.isChecked():
-            self.ax.plot(angles, d_h, label=f"GainH {label_suffix}")
+            self.ax.plot(angles, d_h, label=f"RealizedGainH {label_suffix}")
             has_plot = True
 
         if self.checkBoxVert.isChecked():
-            self.ax.plot(angles, d_v, label=f"GainV {label_suffix}")
+            self.ax.plot(angles, d_v, label=f"RealizedGainV {label_suffix}")
             has_plot = True
 
         if self.checkBoxTotal.isChecked():
@@ -292,7 +304,7 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
             self.ax.plot(
                 angles,
                 gain_total,
-                label=f"GainTotal {label_suffix}",
+                label=f"RealizedGainTotal {label_suffix}",
                 linewidth=2,
                 linestyle="--",
             )
@@ -312,6 +324,116 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
         self.schematicLabel.setImage(path)
         # 如果需要固定大小不拉伸，可以设置
         self.schematicLabel.setFixedSize(150, 150)
+
+
+class Analysis3DPatternInterface(QWidget, Ui_Analysis3DPatternInterface):
+    def __init__(self, processor: DataProcessor, parent=None):
+        super().__init__(parent=parent)
+        self.setupUi(self)
+        self.processor = processor
+
+        # 设置复选框互斥
+        self.buttonGroup = QButtonGroup(self)
+        self.buttonGroup.addButton(self.checkBoxHori)
+        self.buttonGroup.addButton(self.checkBoxVert)
+        self.buttonGroup.addButton(self.checkBoxTotal)
+        self.buttonGroup.setExclusive(True)
+
+        # 默认勾选 checkBoxTotal
+        self.checkBoxTotal.setChecked(True)
+
+        # 布局 Matplotlib (3D)
+        self.figure = plt.figure(figsize=(5, 4), dpi=100)
+        self.ax = self.figure.add_subplot(111, projection="3d")
+        self.canvas = FigureCanvas(self.figure)
+        layout = QVBoxLayout(self.chartContainer)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.canvas)
+
+        self.colorbar = None
+
+        # 初始状态下禁用绘制按钮
+        self.plotButton.setEnabled(False)
+        self.plotButton.clicked.connect(self.update_plot)
+
+    def refresh_comboboxes(self):
+        """当文件加载后，更新下拉列表并启用按钮"""
+        if self.processor.freq is not None:
+            self.freqComboBox.clear()
+            self.freqComboBox.addItems([str(f) for f in self.processor.freq])
+            # 启用绘制按钮
+            self.plotButton.setEnabled(True)
+
+    def update_plot(self):
+        if self.processor.data_mea_amp is None:
+            return
+
+        freq_idx = self.freqComboBox.currentIndex()
+        self.ax.clear()
+
+        # 获取数据 [antenna, polar, freq, theta, phi]
+        if self.checkBoxHori.isChecked():
+            data = self.processor.data_mea_amp[0, 0, freq_idx, :, :]
+            label = "RealizedGainHorizontal"
+        elif self.checkBoxVert.isChecked():
+            data = self.processor.data_mea_amp[0, 1, freq_idx, :, :]
+            label = "RealizedGainVertical"
+        else:  # checkBoxTotal
+            d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, :]
+            d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, :]
+            data = 10 * np.log10(10 ** (d_h / 10) + 10 ** (d_v / 10))
+            label = "RealizedGainTotal"
+
+        # 准备网格数据 (theta是行, phi是列)
+        phi_grid, theta_grid = np.meshgrid(
+            np.radians(self.processor.phi), np.radians(self.processor.theta)
+        )
+
+        # 转换坐标: R 需要为正值，这里使用 (data - min) 或者直接用线性增益
+        # 为了保留方向性，通常将 dB 映射到大于0的范围
+        r = data - np.min(data)
+
+        X = r * np.sin(theta_grid) * np.cos(phi_grid)
+        Y = r * np.sin(theta_grid) * np.sin(phi_grid)
+        Z = r * np.cos(theta_grid)
+
+        # 移除旧的 colorbar
+        if self.colorbar:
+            self.colorbar.remove()
+            self.colorbar = None
+
+        # 归一化数据用于颜色映射（使用原始 dB 数据）
+        norm = plt.Normalize(vmin=np.min(data), vmax=np.max(data))
+        mappable = plt.cm.ScalarMappable(norm=norm, cmap="jet")
+        # 将数据映射到颜色
+        colors = mappable.to_rgba(data)
+
+        # 绘制表面，增加采样率使更平滑，并根据 Gain 值着色
+        surf = self.ax.plot_surface(
+            X,
+            Y,
+            Z,
+            facecolors=colors,
+            antialiased=True,
+            rcount=100,  # 提高采样密度，使图形更平滑
+            ccount=100,
+            edgecolor="none",
+            shade=True,  # 开启阴影以增强立体感
+        )
+
+        # 添加颜色条，展示数值对应关系
+        self.colorbar = self.figure.colorbar(
+            mappable, ax=self.ax, shrink=0.6, aspect=15, pad=0.1
+        )
+        self.colorbar.set_label("Gain (dB)")
+
+        self.ax.set_title(
+            f"3D Radiation Pattern ({label}) at {self.freqComboBox.currentText()} MHz"
+        )
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        self.ax.set_zlabel("Z")
+        self.canvas.draw()
 
 
 class SettingInterface(QWidget):
@@ -407,11 +529,13 @@ class Window(FluentWindow):
         self.homeInterface = HomeInterface(self.processor, self)
         self.gainInterface = AnalysisGainInterface(self.processor, self)
         self.patternInterface = AnalysisPatternInterface(self.processor, self)
+        self.p3dInterface = Analysis3DPatternInterface(self.processor, self)
 
         self.settingInterface = SettingInterface(self)
 
         self.homeInterface.fileLoaded.connect(self.gainInterface.refresh_comboboxes)
         self.homeInterface.fileLoaded.connect(self.patternInterface.refresh_comboboxes)
+        self.homeInterface.fileLoaded.connect(self.p3dInterface.refresh_comboboxes)
 
         # 2. 初始化导航栏
         self.init_navigation()
@@ -429,6 +553,7 @@ class Window(FluentWindow):
         self.addSubInterface(
             self.patternInterface, FIF.FILTER, "2D方向图"
         )  # 添加到导航
+        self.addSubInterface(self.p3dInterface, FIF.FILTER, "3D方向图")  # 添加到导航
         self.addSubInterface(self.settingInterface, FIF.SETTING, "设置")
 
         # 你还可以添加带有路由键的页面（如果需要像之前代码那样使用 routeKey）

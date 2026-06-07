@@ -65,6 +65,13 @@
       <item>
        <layout class="QHBoxLayout" name="horizontalLayout_2">
         <item>
+         <widget class="CheckBox" name="checkBoxMax">
+          <property name="text">
+           <string>Max</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="BodyLabel" name="phiLable">
           <property name="maximumSize">
            <size>

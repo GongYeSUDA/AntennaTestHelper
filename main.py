@@ -140,6 +140,14 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         self.plotButton.setEnabled(False)
         self.plotButton.clicked.connect(self.update_plot)
 
+        # 连接 checkBoxMax 信号
+        self.checkBoxMax.stateChanged.connect(self.on_max_checkbox_changed)
+
+    def on_max_checkbox_changed(self, state):
+        is_checked = state == Qt.Checked.value or state == Qt.Checked
+        self.phiComboBox.setDisabled(is_checked)
+        self.thetaComboBox.setDisabled(is_checked)
+
     def refresh_comboboxes(self):
         """当文件加载后，更新下拉列表并启用按钮"""
         if self.processor.phi is not None:
@@ -155,33 +163,51 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         if self.processor.data_mea_amp is None:
             return
 
-        # 获取选中的索引
-        phi_idx = self.phiComboBox.currentIndex()
-        theta_idx = self.thetaComboBox.currentIndex()
+        is_max = self.checkBoxMax.isChecked()
         freqs = self.processor.freq
+
+        if not is_max:
+            # 获取选中的索引
+            phi_idx = self.phiComboBox.currentIndex()
+            theta_idx = self.thetaComboBox.currentIndex()
+            title_suffix = f"(Phi={self.phiComboBox.currentText()}, Theta={self.thetaComboBox.currentText()})"
+        else:
+            title_suffix = "(Max Gain over all directions)"
 
         self.ax.clear()
         has_plot = False
 
         # 1. 绘制水平极化 (Horizontal/Theta)
         if self.checkBoxHori.isChecked():
-            gain_h = self.processor.data_mea_amp[0, 0, :, theta_idx, phi_idx]
+            if is_max:
+                # data_mea_amp shape: [antenna, polar, freq, theta, phi]
+                gain_h = np.max(self.processor.data_mea_amp[0, 0, :, :, :], axis=(1, 2))
+            else:
+                gain_h = self.processor.data_mea_amp[0, 0, :, theta_idx, phi_idx]
             self.ax.plot(freqs, gain_h, label="RealizedGainHorizontal")
             has_plot = True
 
         # 2. 绘制垂直极化 (Vertical/Phi)
         if self.checkBoxVert.isChecked():
-            # 假设极化索引 1 是垂直极化
-            gain_v = self.processor.data_mea_amp[0, 1, :, theta_idx, phi_idx]
+            if is_max:
+                gain_v = np.max(self.processor.data_mea_amp[0, 1, :, :, :], axis=(1, 2))
+            else:
+                gain_v = self.processor.data_mea_amp[0, 1, :, theta_idx, phi_idx]
             self.ax.plot(freqs, gain_v, label="RealizedGainVertical")
             has_plot = True
 
         # 3. 绘制总增益 (Total Gain)
         if self.checkBoxTotal.isChecked():
             # 自动计算 Total = 10*log10(10^(H/10) + 10^(V/10))
-            h_db = self.processor.data_mea_amp[0, 0, :, theta_idx, phi_idx]
-            v_db = self.processor.data_mea_amp[0, 1, :, theta_idx, phi_idx]
-            gain_total = 10 * np.log10(10 ** (h_db / 10) + 10 ** (v_db / 10))
+            if is_max:
+                h_db = self.processor.data_mea_amp[0, 0, :, :, :]
+                v_db = self.processor.data_mea_amp[0, 1, :, :, :]
+                gain_all_dirs = 10 * np.log10(10 ** (h_db / 10) + 10 ** (v_db / 10))
+                gain_total = np.max(gain_all_dirs, axis=(1, 2))
+            else:
+                h_db = self.processor.data_mea_amp[0, 0, :, theta_idx, phi_idx]
+                v_db = self.processor.data_mea_amp[0, 1, :, theta_idx, phi_idx]
+                gain_total = 10 * np.log10(10 ** (h_db / 10) + 10 ** (v_db / 10))
 
             self.ax.plot(
                 freqs,
@@ -195,9 +221,7 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         if has_plot:
             self.ax.legend()
 
-        self.ax.set_title(
-            f"RealizedGain vs Frequency (Phi={self.phiComboBox.currentText()}, Theta={self.thetaComboBox.currentText()})"
-        )
+        self.ax.set_title(f"RealizedGain vs Frequency {title_suffix}")
         self.ax.set_xlim([freqs[0], freqs[-1]])
         self.ax.set_xlabel("Frequency (MHz)")
         self.ax.set_ylabel("RealizedGain (dB)")

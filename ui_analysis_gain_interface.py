@@ -59,6 +59,11 @@ class Ui_AnalysisGainInterface(object):
         self.verticalLayout_2.setObjectName(u"verticalLayout_2")
         self.horizontalLayout_2 = QHBoxLayout()
         self.horizontalLayout_2.setObjectName(u"horizontalLayout_2")
+        self.checkBoxMax = CheckBox(self.controlCard)
+        self.checkBoxMax.setObjectName(u"checkBoxMax")
+
+        self.horizontalLayout_2.addWidget(self.checkBoxMax)
+
         self.phiLable = BodyLabel(self.controlCard)
         self.phiLable.setObjectName(u"phiLable")
         self.phiLable.setMaximumSize(QSize(50, 16777215))
@@ -150,6 +155,7 @@ class Ui_AnalysisGainInterface(object):
     def retranslateUi(self, AnalysisGainInterface):
         AnalysisGainInterface.setWindowTitle(QCoreApplication.translate("AnalysisGainInterface", u"Form", None))
         self.titleLabel.setText(QCoreApplication.translate("AnalysisGainInterface", u"\u589e\u76ca - \u9891\u7387\u56fe", None))
+        self.checkBoxMax.setText(QCoreApplication.translate("AnalysisGainInterface", u"Max", None))
         self.phiLable.setText(QCoreApplication.translate("AnalysisGainInterface", u"Phi:", None))
         self.thetaLable.setText(QCoreApplication.translate("AnalysisGainInterface", u"Theta:", None))
         self.plotButton.setText(QCoreApplication.translate("AnalysisGainInterface", u"\u7ed8\u5236\u56fe\u8868", None))

@@ -108,6 +108,14 @@ class Ui_AnalysisPatternInterface(object):
 
         self.horizontalLayout_2.addWidget(self.plotButton)
 
+        self.csvButton = PrimaryPushButton(self.controlCard)
+        self.csvButton.setObjectName(u"csvButton")
+        sizePolicy1.setHeightForWidth(self.csvButton.sizePolicy().hasHeightForWidth())
+        self.csvButton.setSizePolicy(sizePolicy1)
+        self.csvButton.setMaximumSize(QSize(200, 16777215))
+
+        self.horizontalLayout_2.addWidget(self.csvButton)
+
 
         self.verticalLayout_3.addLayout(self.horizontalLayout_2)
 
@@ -174,6 +182,7 @@ class Ui_AnalysisPatternInterface(object):
         self.freqLable.setText(QCoreApplication.translate("AnalysisPatternInterface", u"\u9891\u7387 (MHz):", None))
         self.planeLable.setText(QCoreApplication.translate("AnalysisPatternInterface", u"\u56fa\u5b9a\u5e73\u9762:", None))
         self.plotButton.setText(QCoreApplication.translate("AnalysisPatternInterface", u"\u7ed8\u5236\u56fe\u8868", None))
+        self.csvButton.setText(QCoreApplication.translate("AnalysisPatternInterface", u"\u5bfc\u51faCSV", None))
         self.checkBoxHori.setText(QCoreApplication.translate("AnalysisPatternInterface", u"RealizedGainHorizontal", None))
         self.checkBoxVert.setText(QCoreApplication.translate("AnalysisPatternInterface", u"RealizedGainVertical", None))
         self.checkBoxTotal.setText(QCoreApplication.translate("AnalysisPatternInterface", u"RealizedGainTotal", None))

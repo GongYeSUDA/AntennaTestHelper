@@ -38,6 +38,7 @@ from ui_analysis_gain_interface import Ui_AnalysisGainInterface  # 导入新生�
 from ui_analysis_pattern_interface import Ui_AnalysisPatternInterface
 from ui_analysis_3dpattern_interface import Ui_Analysis3DPatternInterface
 from data_processor import DataProcessor
+from scipy.interpolate import RectBivariateSpline
 
 
 class AppConfig(QConfig):
@@ -565,54 +566,63 @@ class Analysis3DPatternInterface(QWidget, Ui_Analysis3DPatternInterface):
             return
 
         freq_idx = self.freqComboBox.currentIndex()
-
-        # 清空整个图像以避免每次绘制时 Colorbar 导致绘图区域不断缩小
         self.figure.clear()
         self.ax = self.figure.add_subplot(111, projection="3d")
 
-        # 获取数据 [antenna, polar, freq, theta, phi]
+        # 1. 获取原始数据 (theta是行, phi是列)
         if self.checkBoxHori.isChecked():
             data = self.processor.data_mea_amp[0, 0, freq_idx, :, :]
             label = "RealizedGainHorizontal"
         elif self.checkBoxVert.isChecked():
             data = self.processor.data_mea_amp[0, 1, freq_idx, :, :]
             label = "RealizedGainVertical"
-        else:  # checkBoxTotal
+        else:
             d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, :]
             d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, :]
             data = 10 * np.log10(10 ** (d_h / 10) + 10 ** (d_v / 10))
             label = "RealizedGainTotal"
 
-        # 准备网格数据 (theta是行, phi是列)
-        phi_grid, theta_grid = np.meshgrid(
-            np.radians(self.processor.phi), np.radians(self.processor.theta)
+        # 2. 插值处理：创建密集的经纬度网格 (例如 1度一个点)
+        theta_orig = self.processor.theta
+        phi_orig = self.processor.phi
+
+        # 定义新的高密度坐标
+        theta_new = np.linspace(
+            theta_orig.min(), theta_orig.max(), theta_orig.max() - theta_orig.min() + 1
+        )
+        phi_new = np.linspace(
+            phi_orig.min(), phi_orig.max(), phi_orig.max() - phi_orig.min() + 1
         )
 
-        # 转换坐标: R 需要为正值，这里使用 (data - min) 或者直接用线性增益
-        # 为了保留方向性，通常将 dB 映射到大于0的范围
-        r = data - np.min(data)
+        # 执行双三次样条插值
+        interp_spline = RectBivariateSpline(theta_orig, phi_orig, data)
+        data_interp = interp_spline(theta_new, phi_new)
 
+        # 3. 准备绘图网格
+        phi_grid, theta_grid = np.meshgrid(np.radians(phi_new), np.radians(theta_new))
+
+        # 4. 坐标转换 (使用插值后的数据)
+        r = data_interp - np.min(data_interp)
         X = r * np.sin(theta_grid) * np.cos(phi_grid)
         Y = r * np.sin(theta_grid) * np.sin(phi_grid)
         Z = r * np.cos(theta_grid)
 
-        # 归一化数据用于颜色映射（使用原始 dB 数据）
-        norm = plt.Normalize(vmin=np.min(data), vmax=np.max(data))
+        # 5. 颜色映射
+        norm = plt.Normalize(vmin=np.min(data_interp), vmax=np.max(data_interp))
         mappable = plt.cm.ScalarMappable(norm=norm, cmap="jet")
-        # 将数据映射到颜色
-        colors = mappable.to_rgba(data)
+        colors = mappable.to_rgba(data_interp)
 
-        # 绘制表面，增加采样率使更平滑，并根据 Gain 值着色
-        surf = self.ax.plot_surface(
+        # 6. 绘图
+        self.ax.plot_surface(
             X,
             Y,
             Z,
             facecolors=colors,
-            antialiased=True,
-            rcount=100,  # 提高采样密度，使图形更平滑
-            ccount=100,
+            antialiased=False,
+            shade=True,
             edgecolor="none",
-            shade=True,  # 开启阴影以增强立体感
+            rcount=80,
+            ccount=80,
         )
 
         # 添加颜色条，展示数值对应关系
@@ -758,7 +768,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     # 设置主题：Light（亮色）, DARK（深色）, AUTO（跟随系统）
-    setTheme(Theme.LIGHT)
+    setTheme(Theme.AUTO)
 
     window = Window()
     window.show()

@@ -127,9 +127,7 @@ class PostProcessingInterface(QWidget, Ui_PostProcessingInterface):
         horizontal_color, vertical_color, total_color = plot_line_colors()
 
         if self.checkBoxGain.isChecked():
-            self.ax.plot(
-                freqs, gain_db, label="Gain", color=total_color, linewidth=2.5
-            )
+            self.ax.plot(freqs, gain_db, label="Gain", color=total_color, linewidth=2.5)
             self.ax.set_ylabel("Gain (dBi)")
             self.ax.set_title("Max Gain vs Frequency")
             tag = "MaxGain"

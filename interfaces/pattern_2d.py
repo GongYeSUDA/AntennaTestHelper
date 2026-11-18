@@ -6,7 +6,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QVBoxLayout, QWidget
 
 from chart_utils import (
     auto_save_chart,

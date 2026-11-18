@@ -7,3 +7,4 @@ PySide6-Fluent-Widgets==1.11.3
 matplotlib==3.11.2
 numpy==2.5.4
 scipy==1.18.1
+scikit-rf==2.2.0

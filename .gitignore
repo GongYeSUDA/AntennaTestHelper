@@ -6,6 +6,7 @@ __pycache__/
 deployment/
 config/
 output/
+testdata/
 
 *.exe
 

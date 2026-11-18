@@ -5,7 +5,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.colors import LinearSegmentedColormap
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -49,7 +48,7 @@ from ui_analysis_3dpattern_interface import Ui_Analysis3DPatternInterface
 from ui_analysis_gain_interface import Ui_AnalysisGainInterface  # 导入新生成的 UI
 from ui_analysis_pattern_interface import Ui_AnalysisPatternInterface
 from ui_home_interface import Ui_HomeInterface
-
+from ui_post_processing_interface import Ui_PostProcessingInterface
 
 # 可导出/保存的图片格式
 IMAGE_FORMATS = ["PNG", "JPG", "PDF", "SVG"]
@@ -65,9 +64,8 @@ class MultiOptionsValidator(ConfigValidator):
 
     def validate(self, value):
         # 允许空列表（未勾选任何格式时跳过导出）
-        return (
-            isinstance(value, (list, tuple))
-            and all(v in self.options for v in value)
+        return isinstance(value, (list, tuple)) and all(
+            v in self.options for v in value
         )
 
     def correct(self, value):
@@ -142,14 +140,65 @@ def plot_line_colors():
 
 
 def plot_colormap():
-    """基于设置的颜色生成 3D 曲面使用的颜色映射"""
-    base = QColor(cfg.plotColor.value)
-    if not base.isValid():
-        base = QColor(0, 0, 255)
+    """3D 曲面固定使用内置 managua 反转配色，不受设置影响"""
+    return plt.get_cmap("managua_r")
 
-    base.setAlpha(255)
-    low = blend_color(base, QColor(255, 255, 255), 0.6).name()
-    return LinearSegmentedColormap.from_list("appColor", [low, base.name()])
+
+def parse_s1p(file_path):
+    """解析 Touchstone .s1p 文件，返回 (频率 MHz, |Γ|²)。
+
+    支持选项行中的 Hz/kHz/MHz/GHz 与 RI/MA/DB 三种数据格式。
+    """
+    freqs = []
+    gamma_sq = []
+    freq_scale = 1e-6  # 默认按 Hz 处理
+    data_format = "RI"
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("!"):
+                continue
+            if line.startswith("#"):
+                tokens = line[1:].split()
+                upper = [token.upper() for token in tokens]
+                if upper:
+                    freq_scale = {
+                        "HZ": 1e-6,
+                        "KHZ": 1e-3,
+                        "MHZ": 1.0,
+                        "GHZ": 1e3,
+                    }.get(upper[0], 1e-6)
+                for candidate in ("RI", "MA", "DB"):
+                    if candidate in upper:
+                        data_format = candidate
+                        break
+                continue
+
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                f_val = float(parts[0])
+                a_val = float(parts[1])
+                b_val = float(parts[2])
+            except ValueError:
+                continue
+
+            if data_format == "RI":
+                gamma2 = a_val * a_val + b_val * b_val
+            elif data_format == "MA":
+                gamma2 = a_val * a_val
+            else:  # DB: S11(dB) = 20log10(|Γ|)
+                gamma2 = (10 ** (a_val / 20.0)) ** 2
+
+            freqs.append(f_val * freq_scale)
+            gamma_sq.append(gamma2)
+
+    if not freqs:
+        raise ValueError("S1P 文件中没有找到有效数据")
+
+    return np.asarray(freqs, dtype=float), np.asarray(gamma_sq, dtype=float)
 
 
 def resolve_output_dir() -> str:
@@ -950,7 +999,7 @@ class Analysis3DPatternInterface(QWidget, Ui_Analysis3DPatternInterface):
         Y = r * np.sin(theta_grid) * np.sin(phi_grid)
         Z = r * np.cos(theta_grid)
 
-        # 5. 颜色映射（颜色取自设置）
+        # 5. 颜色映射（固定 managua 反转配色）
         norm = plt.Normalize(vmin=np.min(data_interp), vmax=np.max(data_interp))
         mappable = plt.cm.ScalarMappable(norm=norm, cmap=plot_colormap())
         colors = mappable.to_rgba(data_interp)
@@ -981,6 +1030,276 @@ class Analysis3DPatternInterface(QWidget, Ui_Analysis3DPatternInterface):
         self.ax.set_ylabel("Y")
         self.ax.set_zlabel("Z")
         self.canvas.draw()
+
+
+class PostProcessingInterface(QWidget, Ui_PostProcessingInterface):
+    """由离散 3D RealizedGain 与 S1P 求解 Gain / Directivity / Efficiency"""
+
+    def __init__(self, processor: DataProcessor, parent=None):
+        super().__init__(parent=parent)
+        self.setupUi(self)
+        self.processor = processor
+
+        # 三个结果互斥，默认显示 MaxGain
+        self.buttonGroup = QButtonGroup(self)
+        self.buttonGroup.addButton(self.checkBoxGain)
+        self.buttonGroup.addButton(self.checkBoxDirectivity)
+        self.buttonGroup.addButton(self.checkBoxEffeciency)
+        self.buttonGroup.setExclusive(True)
+        self.checkBoxGain.setChecked(True)
+
+        # 布局 Matplotlib
+        self.figure, self.ax = plt.subplots(figsize=(5, 4), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        layout = QVBoxLayout(self.chartContainer)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.canvas)
+
+        # S1P 数据缓存（频率为 MHz，gamma2 = |Γ|²）
+        self.s1p_freq = None
+        self.s1p_gamma2 = None
+
+        # 初始状态下禁用绘制相关控件
+        self.plotButton.setEnabled(False)
+        self.csvButton.setEnabled(False)
+        self.chartContainer.setEnabled(False)
+
+        # 连接信号
+        self.plotButton.clicked.connect(self.update_plot)
+        self.csvButton.clicked.connect(self.export_csv)
+        self.openS1PButton.clicked.connect(self.on_open_s1p)
+        self.S1PPathLineEdit.editingFinished.connect(self.on_s1p_path_edited)
+        self.checkBoxNoS1P.stateChanged.connect(self.on_no_s1p_changed)
+
+    def on_no_s1p_changed(self, state):
+        """勾选“视RealizedGain为Gain”后，S1P 文本框与浏览按钮失效"""
+        is_checked = state == Qt.Checked.value or state == Qt.Checked
+        self.S1PPathLineEdit.setDisabled(is_checked)
+        self.openS1PButton.setDisabled(is_checked)
+
+    def on_data_loaded(self):
+        """主数据加载完成后启用绘制按钮"""
+        if self.processor.data_mea_amp is not None:
+            self.plotButton.setEnabled(True)
+
+    def on_open_s1p(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 S1P 文件", "", "Touchstone 文件 (*.s1p);;All Files (*)"
+        )
+        if path:
+            self.load_s1p(path)
+
+    def on_s1p_path_edited(self):
+        path = self.S1PPathLineEdit.text().strip()
+        if path and os.path.isfile(path) and path.lower().endswith(".s1p"):
+            self.load_s1p(path)
+
+    def load_s1p(self, path):
+        try:
+            freqs, gamma2 = parse_s1p(path)
+        except Exception as e:  # noqa: BLE001 解析失败仅提示，不影响其他页面
+            self.s1p_freq = None
+            self.s1p_gamma2 = None
+            show_export_feedback(self, error=e, title="S1P 读取失败")
+            return
+
+        self.S1PPathLineEdit.setText(path)
+        self.s1p_freq = freqs
+        self.s1p_gamma2 = gamma2
+        print(f"S1P 已加载: {path} ({len(freqs)} 个频点)")
+
+    def solid_angle_weights(self):
+        """离散球面的立体角权重 w_ij（完整球面时 Σw ≈ 4π）。
+
+        兼容三种常见角度约定：
+        1. 极角 θ∈[0,180°]、方位角 φ∈[0,360°)；
+        2. 有符号极角 θ∈[-180°,180°]、φ∈[0,180°]（ EMT 数据，
+           θ<0 时方位角折叠到 φ+180°，两个半圈合起来覆盖整圈）；
+        3. 仰角 θ∈[-90°,90°]、φ∈[0,360°)（极角 = 90°−θ）。
+        """
+        theta = np.deg2rad(np.asarray(self.processor.theta, dtype=float))
+        phi = np.deg2rad(np.asarray(self.processor.phi, dtype=float))
+
+        theta_min, theta_max = np.min(theta), np.max(theta)
+        signed_full = theta_min < -1e-9 and theta_max >= np.pi - 1e-6
+        if signed_full:
+            polar = np.abs(theta)  # 有符号极角 → 取绝对值
+        elif theta_min < -1e-9:
+            polar = np.pi / 2 - theta  # 仰角约定
+        else:
+            polar = theta  # 标准极角
+
+        if theta.size > 1:
+            theta_edges = np.empty(theta.size + 1)
+            theta_edges[1:-1] = (polar[:-1] + polar[1:]) / 2.0
+            theta_edges[0] = polar[0] + (polar[0] - polar[1]) / 2.0
+            theta_edges[-1] = polar[-1] + (polar[-1] - polar[-2]) / 2.0
+            theta_edges = np.clip(theta_edges, 0.0, np.pi)
+            # 取绝对值以兼容极角递增/递减两种排列
+            w_theta = np.abs(np.cos(theta_edges[:-1]) - np.cos(theta_edges[1:]))
+        else:
+            w_theta = np.array([2.0])
+
+        if phi.size > 1:
+            step = np.median(np.diff(phi))
+            span = phi[-1] - phi[0]
+            if np.isclose(span, 2 * np.pi) or (
+                signed_full and np.isclose(span, np.pi)
+            ):
+                # 端点重复（0° 与 360°，或有符号约定下的 0° 与 180°）：末列权重置零
+                w_phi = np.zeros(phi.size)
+                w_phi[:-1] = step
+            elif span >= 2 * np.pi - 1.5 * step:
+                # 周期整圆（如 0~350°）：每个方位单元等宽
+                w_phi = np.full(phi.size, step)
+            else:
+                phi_edges = np.empty(phi.size + 1)
+                phi_edges[1:-1] = (phi[:-1] + phi[1:]) / 2.0
+                phi_edges[0] = phi[0] - step / 2.0
+                phi_edges[-1] = phi[-1] + step / 2.0
+                w_phi = np.diff(phi_edges)
+        else:
+            w_phi = np.array([2 * np.pi])
+
+        return np.outer(w_theta, w_phi)
+
+    def compute_metrics(self):
+        """返回 (freqs, gain_dBi, directivity_dBi, efficiency, used_s1p)。
+
+        G_re = max(r), D = 4π·max(r)/Σw·r,
+        G = G_re/(1-|Γ|²), η_rad = G/D = Σw·r / (4π(1-|Γ|²))。
+        勾选“视RealizedGain为Gain”时取 |Γ|=0，此时 G=G_re、η=总效率。
+        """
+        data = self.processor.data_mea_amp
+        # data_mea_amp: [antenna, polar, freq, theta, phi]
+        h = data[0, 0]
+        v = data[0, 1]
+        r = 10 ** (h / 10.0) + 10 ** (v / 10.0)  # 双极化按功率相加
+        r_max = np.max(r, axis=(1, 2))
+        s = np.sum(r * self.solid_angle_weights()[np.newaxis, :, :], axis=(1, 2))
+
+        no_s1p = self.checkBoxNoS1P.isChecked()
+        used_s1p = (not no_s1p) and (self.s1p_freq is not None)
+        if used_s1p:
+            gamma2 = np.interp(self.processor.freq, self.s1p_freq, self.s1p_gamma2)
+            mismatch = np.clip(1.0 - gamma2, 1e-12, 1.0)
+        else:
+            mismatch = np.ones_like(r_max)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            gain_db = 10 * np.log10(r_max / mismatch)
+            directivity_db = 10 * np.log10(4 * np.pi * r_max / s)
+            efficiency = s / (4 * np.pi * mismatch)  # 辐射效率（0~1）
+
+        return self.processor.freq, gain_db, directivity_db, efficiency, used_s1p
+
+    def update_plot(self):
+        if self.processor.data_mea_amp is None:
+            return
+
+        try:
+            freqs, gain_db, directivity_db, efficiency, used_s1p = (
+                self.compute_metrics()
+            )
+        except Exception as e:  # noqa: BLE001 计算失败不应导致程序崩溃
+            show_export_feedback(self, error=e, title="后处理计算失败")
+            return
+
+        if not used_s1p:
+            print("提示: 未使用 S1P（按 |Γ|=0 处理）")
+
+        self.ax.clear()
+        horizontal_color, vertical_color, total_color = plot_line_colors()
+
+        if self.checkBoxGain.isChecked():
+            self.ax.plot(
+                freqs, gain_db, label="Gain", color=total_color, linewidth=2.5
+            )
+            self.ax.set_ylabel("Gain (dBi)")
+            self.ax.set_title("Max Gain vs Frequency")
+            tag = "MaxGain"
+        elif self.checkBoxDirectivity.isChecked():
+            self.ax.plot(
+                freqs,
+                directivity_db,
+                label="Directivity",
+                color=horizontal_color,
+                linewidth=1.5,
+            )
+            self.ax.set_ylabel("Directivity (dBi)")
+            self.ax.set_title("Max Directivity vs Frequency")
+            tag = "MaxDirectivity"
+        else:
+            self.ax.plot(
+                freqs,
+                efficiency * 100,
+                label="Efficiency",
+                color=vertical_color,
+                linewidth=1.5,
+            )
+            self.ax.set_ylabel("Efficiency (%)")
+            self.ax.set_title("Efficiency vs Frequency")
+            tag = "Efficiency"
+
+        self.ax.set_xlim([freqs[0], freqs[-1]])
+        self.ax.set_xlabel("Frequency (MHz)")
+        self.ax.grid(True)
+        self.ax.legend()
+        self.canvas.draw()
+
+        self.chartContainer.setEnabled(True)
+        self.csvButton.setEnabled(True)
+
+        auto_save_chart(self, self.figure, chart_base_name(self.processor, tag))
+
+    def export_csv(self):
+        if self.processor.data_mea_amp is None:
+            return
+
+        try:
+            freqs, gain_db, directivity_db, efficiency, _ = self.compute_metrics()
+        except Exception as e:  # noqa: BLE001
+            show_export_feedback(self, error=e, title="数据计算失败")
+            return
+
+        import csv
+
+        base_name = ""
+        if self.processor.file_path:
+            base_name = (
+                os.path.splitext(os.path.basename(self.processor.file_path))[0] + "_"
+            )
+
+        if self.checkBoxGain.isChecked():
+            default_name = f"{base_name}MaxGain.csv"
+            data_dict = {"Frequency(MHz)": freqs, "MaxGain(dBi)": gain_db}
+        elif self.checkBoxDirectivity.isChecked():
+            default_name = f"{base_name}MaxDirectivity.csv"
+            data_dict = {
+                "Frequency(MHz)": freqs,
+                "MaxDirectivity(dBi)": directivity_db,
+            }
+        else:
+            default_name = f"{base_name}Efficiency.csv"
+            data_dict = {"Frequency(MHz)": freqs, "Efficiency(%)": efficiency * 100}
+
+        base_dir = (
+            os.path.dirname(self.processor.file_path)
+            if self.processor.file_path
+            else ""
+        )
+        default_path = os.path.join(base_dir, default_name)
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export CSV", default_path, "CSV Files (*.csv)"
+        )
+        if file_path:
+            keys = list(data_dict.keys())
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(keys)
+                for i in range(len(freqs)):
+                    writer.writerow([data_dict[k][i] for k in keys])
 
 
 class MultiSelectSettingCard(SettingCard):
@@ -1138,12 +1457,14 @@ class Window(FluentWindow):
         self.gainInterface = AnalysisGainInterface(self.processor, self)
         self.patternInterface = AnalysisPatternInterface(self.processor, self)
         self.p3dInterface = Analysis3DPatternInterface(self.processor, self)
+        self.postInterface = PostProcessingInterface(self.processor, self)
 
         self.settingInterface = SettingInterface(self)
 
         self.homeInterface.fileLoaded.connect(self.gainInterface.refresh_comboboxes)
         self.homeInterface.fileLoaded.connect(self.patternInterface.refresh_comboboxes)
         self.homeInterface.fileLoaded.connect(self.p3dInterface.refresh_comboboxes)
+        self.homeInterface.fileLoaded.connect(self.postInterface.on_data_loaded)
 
         # 2. 初始化导航栏
         self.init_navigation()
@@ -1162,6 +1483,7 @@ class Window(FluentWindow):
             self.patternInterface, FIF.FILTER, "2D方向图"
         )  # 添加到导航
         self.addSubInterface(self.p3dInterface, FIF.FILTER, "3D方向图")  # 添加到导航
+        self.addSubInterface(self.postInterface, FIF.DEVELOPER_TOOLS, "后处理")
         self.addSubInterface(self.settingInterface, FIF.SETTING, "设置")
 
         # 你还可以添加带有路由键的页面（如果需要像之前代码那样使用 routeKey）

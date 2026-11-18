@@ -1,44 +1,103 @@
+import os
 import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.colors import LinearSegmentedColormap
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
-    QWidget,
-    QVBoxLayout,
+    QButtonGroup,
     # QLabel,
     QFileDialog,
-    QTableWidgetItem,
     QHeaderView,
-    QButtonGroup,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from qfluentwidgets import (
+    CheckBox,
+    ColorConfigItem,
+    ColorSettingCard,
+    ConfigItem,
+    ConfigValidator,
+    ExpandLayout,
+    FluentWindow,
+    InfoBar,
+    InfoBarPosition,
+    # ImageLabel,
+    PushSettingCard,
+    QConfig,
     ScrollArea,
+    SettingCard,
     SettingCardGroup,
     SwitchSettingCard,
-    ComboBoxSettingCard,
-    PushSettingCard,
-    ExpandLayout,
-    FluentIcon as FIF,
-    ColorSettingCard,
-    FluentWindow,
-    setTheme,
     Theme,
-    QConfig,
-    ConfigItem,
-    OptionsConfigItem,
-    ColorConfigItem,
-    OptionsValidator,
-    # ImageLabel,
+    qconfig,
+    setTheme,
 )
-from PySide6.QtGui import QColor
-from ui_home_interface import Ui_HomeInterface
+from qfluentwidgets import (
+    FluentIcon as FIF,
+)
+from scipy.interpolate import RectBivariateSpline
+
+from data_processor import DataProcessor
+from ui_analysis_3dpattern_interface import Ui_Analysis3DPatternInterface
 from ui_analysis_gain_interface import Ui_AnalysisGainInterface  # 导入新生成的 UI
 from ui_analysis_pattern_interface import Ui_AnalysisPatternInterface
-from ui_analysis_3dpattern_interface import Ui_Analysis3DPatternInterface
-from data_processor import DataProcessor
-from scipy.interpolate import RectBivariateSpline
+from ui_home_interface import Ui_HomeInterface
+
+
+# 可导出/保存的图片格式
+IMAGE_FORMATS = ["PNG", "JPG", "PDF", "SVG"]
+# 未指定输出路径时使用的默认目录
+DEFAULT_OUTPUT_DIR = "output"
+
+
+class MultiOptionsValidator(ConfigValidator):
+    """多选选项校验器"""
+
+    def __init__(self, options):
+        self.options = list(options)
+
+    def validate(self, value):
+        # 允许空列表（未勾选任何格式时跳过导出）
+        return (
+            isinstance(value, (list, tuple))
+            and all(v in self.options for v in value)
+        )
+
+    def correct(self, value):
+        if isinstance(value, str):
+            value = [value]
+
+        if not isinstance(value, (list, tuple)):
+            return [self.options[0]]
+
+        # 去重并按选项顺序排列，避免传入非法值
+        return [option for option in self.options if option in value]
+
+
+class OutputFolderValidator(ConfigValidator):
+    """输出目录校验器，允许为空（为空时使用默认目录）"""
+
+    def validate(self, value):
+        return isinstance(value, str)
+
+    def correct(self, value):
+        if not value:
+            return ""
+
+        path = Path(value)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return ""
+
+        return str(path.absolute()).replace("\\", "/")
 
 
 class AppConfig(QConfig):
@@ -48,13 +107,149 @@ class AppConfig(QConfig):
     plotColor = ColorConfigItem("Plot", "Color", QColor(0, 0, 255))
     # 归一化
     isNormalization = ConfigItem("Plot", "IsNormalization", False)
-    # 输出格式
-    outputFormat = OptionsConfigItem(
-        "Output", "Format", "PNG", OptionsValidator(["PNG", "JPG", "PDF", "SVG"])
+    # 图片输出路径
+    outputPath = ConfigItem("Output", "Path", "", OutputFolderValidator())
+    # 图片输出格式（多选）
+    outputFormats = ConfigItem(
+        "Output", "Formats", [IMAGE_FORMATS[0]], MultiOptionsValidator(IMAGE_FORMATS)
     )
 
 
 cfg = AppConfig()
+
+
+def blend_color(color: QColor, target: QColor, ratio: float) -> QColor:
+    """按比例把 color 混向 target"""
+    ratio = min(max(ratio, 0.0), 1.0)
+    return QColor(
+        round(color.red() * (1 - ratio) + target.red() * ratio),
+        round(color.green() * (1 - ratio) + target.green() * ratio),
+        round(color.blue() * (1 - ratio) + target.blue() * ratio),
+    )
+
+
+def plot_line_colors():
+    """读取设置中的线条颜色，返回 (水平, 垂直, 总增益) 三种颜色"""
+    base = QColor(cfg.plotColor.value)
+    if not base.isValid():
+        base = QColor(0, 0, 255)
+
+    base.setAlpha(255)
+    horizontal = base.name()
+    vertical = blend_color(base, QColor(255, 255, 255), 0.4).name()
+    total = blend_color(base, QColor(0, 0, 0), 0.25).name()
+    return horizontal, vertical, total
+
+
+def plot_colormap():
+    """基于设置的颜色生成 3D 曲面使用的颜色映射"""
+    base = QColor(cfg.plotColor.value)
+    if not base.isValid():
+        base = QColor(0, 0, 255)
+
+    base.setAlpha(255)
+    low = blend_color(base, QColor(255, 255, 255), 0.6).name()
+    return LinearSegmentedColormap.from_list("appColor", [low, base.name()])
+
+
+def resolve_output_dir() -> str:
+    """获取图片输出目录，不存在时自动创建"""
+    path = cfg.outputPath.value or DEFAULT_OUTPUT_DIR
+    path = os.path.abspath(path)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def chart_base_name(processor: DataProcessor, suffix: str) -> str:
+    """根据数据文件名与图表后缀生成图片文件名"""
+    if processor.file_path:
+        stem = os.path.splitext(os.path.basename(processor.file_path))[0]
+    else:
+        stem = "Antenna"
+
+    return f"{stem}_{suffix}"
+
+
+def save_figure(figure, base_name: str):
+    """按设置的多选格式把图表保存到输出路径，返回已保存的文件列表"""
+    output_dir = resolve_output_dir()
+    saved_paths = []
+
+    for fmt in cfg.outputFormats.value:
+        path = os.path.join(output_dir, f"{base_name}.{fmt.lower()}")
+        # JPG 不支持透明背景，统一使用不透明底色
+        figure.savefig(path, dpi=300, bbox_inches="tight", transparent=False)
+        saved_paths.append(path)
+
+    return saved_paths
+
+
+def show_export_feedback(
+    widget, saved_paths=None, error=None, warning=None, title="图表保存失败"
+):
+    """在界面上提示图片保存结果，也可用于弹出其他错误提示"""
+    old_bar = getattr(widget, "_exportBar", None)
+    if old_bar is not None:
+        try:
+            old_bar.close()
+        except RuntimeError:
+            pass
+
+    if error is not None:
+        bar = InfoBar.error(
+            title,
+            str(error),
+            orient=Qt.Vertical,
+            isClosable=True,
+            duration=6000,
+            position=InfoBarPosition.BOTTOM_RIGHT,
+            parent=widget,
+        )
+    elif warning is not None:
+        bar = InfoBar.warning(
+            "已跳过导出",
+            str(warning),
+            orient=Qt.Vertical,
+            isClosable=True,
+            duration=4000,
+            position=InfoBarPosition.BOTTOM_RIGHT,
+            parent=widget,
+        )
+    else:
+        output_dir = resolve_output_dir()
+        formats = "、".join(
+            os.path.splitext(path)[1].lstrip(".").upper() for path in saved_paths
+        )
+        bar = InfoBar.success(
+            "图表已保存",
+            f"{formats} 已导出至 {output_dir}",
+            orient=Qt.Vertical,
+            isClosable=False,
+            duration=2600,
+            position=InfoBarPosition.BOTTOM_RIGHT,
+            parent=widget,
+        )
+
+    widget._exportBar = bar
+
+
+def auto_save_chart(widget, figure, base_name: str):
+    """绘制完成后自动把图表导出到输出路径"""
+    # 设置中未勾选任何图片格式时，跳过导出并提示
+    if not cfg.outputFormats.value:
+        show_export_feedback(widget, warning="未勾选任何图片格式，请在设置中勾选后重试")
+        return []
+
+    try:
+        saved_paths = save_figure(figure, base_name)
+    except Exception as e:  # noqa: BLE001 保存失败不应影响绘图结果
+        print(f"保存图表失败: {e}")
+        show_export_feedback(widget, error=e)
+        return []
+
+    print(f"图表已保存: {' '.join(saved_paths)}")
+    show_export_feedback(widget, saved_paths)
+    return saved_paths
 
 
 class HomeInterface(QWidget, Ui_HomeInterface):
@@ -174,12 +369,17 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
             # 获取选中的索引
             phi_idx = self.phiComboBox.currentIndex()
             theta_idx = self.thetaComboBox.currentIndex()
+            if phi_idx < 0 or theta_idx < 0:
+                # 下拉框为空（如数据未加载或被清空），中止绘制
+                return
             title_suffix = f"(Phi={self.phiComboBox.currentText()}, Theta={self.thetaComboBox.currentText()})"
         else:
             title_suffix = "(Max Gain over all directions)"
 
         self.ax.clear()
         has_plot = False
+        # 读取设置中的线条颜色
+        horizontal_color, vertical_color, total_color = plot_line_colors()
 
         # 1. 绘制水平极化 (Horizontal/Theta)
         if self.checkBoxHori.isChecked():
@@ -188,7 +388,13 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
                 gain_h = np.max(self.processor.data_mea_amp[0, 0, :, :, :], axis=(1, 2))
             else:
                 gain_h = self.processor.data_mea_amp[0, 0, :, theta_idx, phi_idx]
-            self.ax.plot(freqs, gain_h, label="RealizedGainHorizontal")
+            self.ax.plot(
+                freqs,
+                gain_h,
+                label="RealizedGainHorizontal",
+                color=horizontal_color,
+                linewidth=1.5,
+            )
             has_plot = True
 
         # 2. 绘制垂直极化 (Vertical/Phi)
@@ -197,7 +403,14 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
                 gain_v = np.max(self.processor.data_mea_amp[0, 1, :, :, :], axis=(1, 2))
             else:
                 gain_v = self.processor.data_mea_amp[0, 1, :, theta_idx, phi_idx]
-            self.ax.plot(freqs, gain_v, label="RealizedGainVertical")
+            self.ax.plot(
+                freqs,
+                gain_v,
+                label="RealizedGainVertical",
+                color=vertical_color,
+                linewidth=1.5,
+                linestyle="-.",
+            )
             has_plot = True
 
         # 3. 绘制总增益 (Total Gain)
@@ -217,7 +430,8 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
                 freqs,
                 gain_total,
                 label="RealizedGainTotal",
-                linewidth=2,
+                color=total_color,
+                linewidth=2.5,
                 linestyle="--",
             )
             has_plot = True
@@ -236,6 +450,31 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         self.ax.set_ylabel("RealizedGain (dBi)")
         self.ax.grid(True)
         self.canvas.draw()
+
+        # 按下“绘制图表”后自动导出图片
+        if has_plot:
+            if is_max:
+                name_suffix = "RealizedGain_Max"
+            else:
+                name_suffix = (
+                    f"RealizedGain_Phi{self.phiComboBox.currentText()}"
+                    f"_Theta{self.thetaComboBox.currentText()}"
+                )
+
+            series = "".join(
+                tag
+                for tag, checked in (
+                    ("H", self.checkBoxHori.isChecked()),
+                    ("V", self.checkBoxVert.isChecked()),
+                    ("Tot", self.checkBoxTotal.isChecked()),
+                )
+                if checked
+            )
+            auto_save_chart(
+                self,
+                self.figure,
+                chart_base_name(self.processor, f"{name_suffix}_{series}"),
+            )
 
     def export_csv(self):
         if self.processor.data_mea_amp is None:
@@ -257,6 +496,9 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
         if not is_max:
             phi_idx = self.phiComboBox.currentIndex()
             theta_idx = self.thetaComboBox.currentIndex()
+            if phi_idx < 0 or theta_idx < 0:
+                # 下拉框为空（如数据未加载或被清空），中止导出
+                return
             default_name += f"_Phi{self.phiComboBox.currentText()}_Theta{self.thetaComboBox.currentText()}"
         else:
             default_name += "_Max"
@@ -294,8 +536,8 @@ class AnalysisGainInterface(QWidget, Ui_AnalysisGainInterface):
 
         default_name += ".csv"
 
-        import os
         import csv
+        import os
 
         base_dir = (
             os.path.dirname(self.processor.file_path)
@@ -380,38 +622,67 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
             return
 
         freq_idx = self.freqComboBox.currentIndex()
+        if freq_idx < 0:
+            return
         plane_idx = self.planeComboBox.currentIndex()
 
         self.ax.clear()
         has_plot = False
+        # 读取设置中的线条颜色
+        horizontal_color, vertical_color, total_color = plot_line_colors()
 
         # 根据选中的平面确定角度和数据索引
-        if plane_idx == 0:  # Phi = 0
-            angles = np.radians(self.processor.theta)
-            phi_idx = np.where(self.processor.phi == 0)[0][0]
-            label_suffix = "(Phi=0)"
-            d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
-            d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
-        elif plane_idx == 1:  # Phi = 90
-            angles = np.radians(self.processor.theta)
-            phi_idx = np.where(self.processor.phi == 90)[0][0]
-            label_suffix = "(Phi=90)"
-            d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
-            d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
-        else:  # Theta = 90
-            angles = np.radians(self.processor.phi)
-            theta_idx = np.where(self.processor.theta == 90)[0][0]
-            label_suffix = "(Theta=90)"
-            d_h = self.processor.data_mea_amp[0, 0, freq_idx, theta_idx, :]
-            d_v = self.processor.data_mea_amp[0, 1, freq_idx, theta_idx, :]
+        plane_name = self.planeComboBox.currentText()
+        try:
+            if plane_idx == 0:  # Phi = 0
+                angles = np.radians(self.processor.theta)
+                phi_idx = np.where(self.processor.phi == 0)[0][0]
+                label_suffix = "(Phi=0)"
+                d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
+                d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
+            elif plane_idx == 1:  # Phi = 90
+                angles = np.radians(self.processor.theta)
+                phi_idx = np.where(self.processor.phi == 90)[0][0]
+                label_suffix = "(Phi=90)"
+                d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
+                d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
+            else:  # Theta = 90
+                angles = np.radians(self.processor.phi)
+                theta_idx = np.where(self.processor.theta == 90)[0][0]
+                label_suffix = "(Theta=90)"
+                d_h = self.processor.data_mea_amp[0, 0, freq_idx, theta_idx, :]
+                d_v = self.processor.data_mea_amp[0, 1, freq_idx, theta_idx, :]
+        except IndexError:
+            # 数据中不存在所选切面（如 phi 中没有 0/90 或 theta 中没有 90），
+            # 弹出与导出失败同样的提示并中止绘制
+            show_export_feedback(
+                self,
+                error=f"数据中不存在切面 {plane_name}，无法绘制",
+                title="方向图绘制失败",
+            )
+            self.canvas.draw()  # ax 已被 clear，重绘以刷新画布
+            return
 
         # 绘制
         if self.checkBoxHori.isChecked():
-            self.ax.plot(angles, d_h, label=f"RealizedGainH {label_suffix}")
+            self.ax.plot(
+                angles,
+                d_h,
+                label=f"RealizedGainH {label_suffix}",
+                color=horizontal_color,
+                linewidth=1.5,
+            )
             has_plot = True
 
         if self.checkBoxVert.isChecked():
-            self.ax.plot(angles, d_v, label=f"RealizedGainV {label_suffix}")
+            self.ax.plot(
+                angles,
+                d_v,
+                label=f"RealizedGainV {label_suffix}",
+                color=vertical_color,
+                linewidth=1.5,
+                linestyle="-.",
+            )
             has_plot = True
 
         if self.checkBoxTotal.isChecked():
@@ -420,7 +691,8 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
                 angles,
                 gain_total,
                 label=f"RealizedGainTotal {label_suffix}",
-                linewidth=2,
+                color=total_color,
+                linewidth=2.5,
                 linestyle="--",
             )
             has_plot = True
@@ -438,6 +710,27 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
         self.ax.set_title(f"Radiation Pattern at {self.freqComboBox.currentText()} MHz")
         self.canvas.draw()
 
+        # 按下“绘制图表”后自动导出图片
+        if has_plot:
+            freq = self.processor.freq[freq_idx]
+            plane_tag = ("Phi0", "Phi90", "Theta90")[plane_idx]
+            series = "".join(
+                tag
+                for tag, checked in (
+                    ("H", self.checkBoxHori.isChecked()),
+                    ("V", self.checkBoxVert.isChecked()),
+                    ("Tot", self.checkBoxTotal.isChecked()),
+                )
+                if checked
+            )
+            auto_save_chart(
+                self,
+                self.figure,
+                chart_base_name(
+                    self.processor, f"Pattern_{freq}MHz_{plane_tag}_{series}"
+                ),
+            )
+
     def update_schematic(self, path):
         """更新 ImageLabel 的图片"""
         # ImageLabel 会自动处理圆角和缩放
@@ -450,6 +743,8 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
             return
 
         freq_idx = self.freqComboBox.currentIndex()
+        if freq_idx < 0:
+            return
         freq = self.processor.freq[freq_idx]
         plane_idx = self.planeComboBox.currentIndex()
 
@@ -463,27 +758,37 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
 
         default_name = f"{base_name}Pattern_{freq}MHz"
 
-        if plane_idx == 0:
-            default_name += "_Phi0"
-            angles_deg = self.processor.theta
-            phi_idx = np.where(self.processor.phi == 0)[0][0]
-            d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
-            d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
-            angle_col = "Theta(deg)"
-        elif plane_idx == 1:
-            default_name += "_Phi90"
-            angles_deg = self.processor.theta
-            phi_idx = np.where(self.processor.phi == 90)[0][0]
-            d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
-            d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
-            angle_col = "Theta(deg)"
-        else:
-            default_name += "_Theta90"
-            angles_deg = self.processor.phi
-            theta_idx = np.where(self.processor.theta == 90)[0][0]
-            d_h = self.processor.data_mea_amp[0, 0, freq_idx, theta_idx, :]
-            d_v = self.processor.data_mea_amp[0, 1, freq_idx, theta_idx, :]
-            angle_col = "Phi(deg)"
+        plane_name = self.planeComboBox.currentText()
+        try:
+            if plane_idx == 0:
+                default_name += "_Phi0"
+                angles_deg = self.processor.theta
+                phi_idx = np.where(self.processor.phi == 0)[0][0]
+                d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
+                d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
+                angle_col = "Theta(deg)"
+            elif plane_idx == 1:
+                default_name += "_Phi90"
+                angles_deg = self.processor.theta
+                phi_idx = np.where(self.processor.phi == 90)[0][0]
+                d_h = self.processor.data_mea_amp[0, 0, freq_idx, :, phi_idx]
+                d_v = self.processor.data_mea_amp[0, 1, freq_idx, :, phi_idx]
+                angle_col = "Theta(deg)"
+            else:
+                default_name += "_Theta90"
+                angles_deg = self.processor.phi
+                theta_idx = np.where(self.processor.theta == 90)[0][0]
+                d_h = self.processor.data_mea_amp[0, 0, freq_idx, theta_idx, :]
+                d_v = self.processor.data_mea_amp[0, 1, freq_idx, theta_idx, :]
+                angle_col = "Phi(deg)"
+        except IndexError:
+            # 数据中不存在所选切面，弹出与导出失败同样的提示并中止导出
+            show_export_feedback(
+                self,
+                error=f"数据中不存在切面 {plane_name}，无法导出",
+                title="方向图导出失败",
+            )
+            return
 
         data_dict = {angle_col: angles_deg}
 
@@ -500,8 +805,8 @@ class AnalysisPatternInterface(QWidget, Ui_AnalysisPatternInterface):
 
         default_name += ".csv"
 
-        import os
         import csv
+        import os
 
         base_dir = (
             os.path.dirname(self.processor.file_path)
@@ -566,9 +871,40 @@ class Analysis3DPatternInterface(QWidget, Ui_Analysis3DPatternInterface):
             return
 
         freq_idx = self.freqComboBox.currentIndex()
+        if freq_idx < 0:
+            return
+
         self.figure.clear()
         self.ax = self.figure.add_subplot(111, projection="3d")
 
+        try:
+            self._plot_3d_pattern(freq_idx)
+        except Exception as e:  # noqa: BLE001 绘图失败不应导致程序崩溃
+            print(f"3D方向图绘制失败: {e}")
+            show_export_feedback(
+                self,
+                error=e,
+                title="3D方向图绘制失败",
+            )
+            self.canvas.draw()
+            return
+
+        # 按下“绘制图表”后自动导出图片
+        if self.checkBoxHori.isChecked():
+            series = "H"
+        elif self.checkBoxVert.isChecked():
+            series = "V"
+        else:
+            series = "Tot"
+        freq = self.processor.freq[freq_idx]
+        auto_save_chart(
+            self,
+            self.figure,
+            chart_base_name(self.processor, f"3DPattern_{freq}MHz_{series}"),
+        )
+
+    def _plot_3d_pattern(self, freq_idx):
+        """根据当前选中系列绘制 3D 方向图，数据不满足插值条件时抛出异常"""
         # 1. 获取原始数据 (theta是行, phi是列)
         if self.checkBoxHori.isChecked():
             data = self.processor.data_mea_amp[0, 0, freq_idx, :, :]
@@ -585,6 +921,13 @@ class Analysis3DPatternInterface(QWidget, Ui_Analysis3DPatternInterface):
         # 2. 插值处理：创建密集的经纬度网格 (例如 1度一个点)
         theta_orig = self.processor.theta
         phi_orig = self.processor.phi
+
+        if len(theta_orig) < 4 or len(phi_orig) < 4:
+            # 双三次样条插值要求每个方向至少 4 个网格点
+            raise ValueError(
+                f"网格点数不足：theta={len(theta_orig)}, phi={len(phi_orig)}，"
+                "3D 插值需要每个方向至少 4 个点"
+            )
 
         # 定义新的高密度坐标
         theta_new = np.linspace(
@@ -607,9 +950,9 @@ class Analysis3DPatternInterface(QWidget, Ui_Analysis3DPatternInterface):
         Y = r * np.sin(theta_grid) * np.sin(phi_grid)
         Z = r * np.cos(theta_grid)
 
-        # 5. 颜色映射
+        # 5. 颜色映射（颜色取自设置）
         norm = plt.Normalize(vmin=np.min(data_interp), vmax=np.max(data_interp))
-        mappable = plt.cm.ScalarMappable(norm=norm, cmap="jet")
+        mappable = plt.cm.ScalarMappable(norm=norm, cmap=plot_colormap())
         colors = mappable.to_rgba(data_interp)
 
         # 6. 绘图
@@ -638,6 +981,58 @@ class Analysis3DPatternInterface(QWidget, Ui_Analysis3DPatternInterface):
         self.ax.set_ylabel("Y")
         self.ax.set_zlabel("Z")
         self.canvas.draw()
+
+
+class MultiSelectSettingCard(SettingCard):
+    """支持多选的设置卡片"""
+
+    valueChanged = Signal(list)
+
+    def __init__(
+        self,
+        configItem,
+        icon,
+        title,
+        content=None,
+        options=None,
+        parent=None,
+    ):
+        super().__init__(icon, title, content, parent)
+        self.configItem = configItem
+        self.options = list(options or IMAGE_FORMATS)
+        self.checkBoxes = []
+
+        for option in self.options:
+            checkBox = CheckBox(option, self)
+            checkBox.setChecked(option in (qconfig.get(configItem) or []))
+            checkBox.stateChanged.connect(self.__onStateChanged)
+            self.hBoxLayout.addSpacing(16)
+            self.hBoxLayout.addWidget(checkBox, 0, Qt.AlignRight)
+            self.checkBoxes.append(checkBox)
+
+        self.hBoxLayout.addSpacing(16)
+        configItem.valueChanged.connect(self.setValue)
+
+    def checkedItems(self):
+        """按选项顺序返回当前勾选的值"""
+        return [checkBox.text() for checkBox in self.checkBoxes if checkBox.isChecked()]
+
+    def __onStateChanged(self, state):
+        values = self.checkedItems()
+
+        # 允许全部不勾选：绘制图表时将跳过图片导出
+        if qconfig.get(self.configItem) != values:
+            qconfig.set(self.configItem, values)
+
+        self.valueChanged.emit(values)
+
+    def setValue(self, values):
+        """根据配置值同步勾选状态"""
+        values = list(values or [])
+        for checkBox in self.checkBoxes:
+            checkBox.blockSignals(True)
+            checkBox.setChecked(checkBox.text() in values)
+            checkBox.blockSignals(False)
 
 
 class SettingInterface(QWidget):
@@ -692,16 +1087,15 @@ class SettingInterface(QWidget):
         self.outputGroup = SettingCardGroup("导出选项", self.scrollWidget)
 
         self.pathCard = PushSettingCard(
-            "选择目录", FIF.FOLDER, "输出路径", "当前路径: ./output", self.outputGroup
+            "选择目录", FIF.FOLDER, "输出路径", self._path_text(), self.outputGroup
         )
 
-        # 传入 cfg.outputFormat
-        self.formatCard = ComboBoxSettingCard(
-            cfg.outputFormat,
+        self.formatCard = MultiSelectSettingCard(
+            cfg.outputFormats,
             FIF.PHOTO,
             "图片格式",
-            "选择保存图片的后缀名",
-            ["PNG", "JPG", "PDF", "SVG"],
+            "可同时选择多种格式，绘制图表时自动导出",
+            IMAGE_FORMATS,
             self.outputGroup,
         )
         self.outputGroup.addSettingCard(self.pathCard)
@@ -717,10 +1111,20 @@ class SettingInterface(QWidget):
         # 连接信号
         self.pathCard.clicked.connect(self.on_select_path)
 
+    def _path_text(self):
+        """输出路径卡片的说明文字"""
+        path = cfg.outputPath.value
+        if not path:
+            return f"当前路径: {os.path.abspath(DEFAULT_OUTPUT_DIR)}（默认）"
+        return f"当前路径: {path}"
+
     def on_select_path(self):
-        path = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
+        path = QFileDialog.getExistingDirectory(
+            self, "选择输出文件夹", cfg.outputPath.value or ""
+        )
         if path:
-            self.pathCard.setContent(f"当前路径: {path}")
+            qconfig.set(cfg.outputPath, path)
+            self.pathCard.setContent(self._path_text())
 
 
 class Window(FluentWindow):
@@ -766,6 +1170,9 @@ class Window(FluentWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # 读取配置文件，恢复线条颜色、输出路径、图片格式等设置
+    qconfig.load("config/config.json", cfg)
 
     # 设置主题：Light（亮色）, DARK（深色）, AUTO（跟随系统）
     setTheme(Theme.AUTO)

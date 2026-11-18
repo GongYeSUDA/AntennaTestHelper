@@ -4,7 +4,14 @@ __pycache__/
 
 .vscode/
 deployment/
+config/
+output/
 
 *.exe
 
 assets/*.log
+
+# 部署配置：本机生成，不入库（模板见 pysidedeploy.spec.template）
+pysidedeploy.spec
+
+AGENTS.md

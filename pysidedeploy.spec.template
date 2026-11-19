@@ -24,7 +24,7 @@ icon =
 python_path =
 
 # python packages to install
-packages = Nuitka==4.1.1
+packages = Nuitka==4.3.5
 
 # buildozer = for deploying Android application
 android_packages = buildozer==1.5.0,cython==0.29.33
@@ -65,10 +65,15 @@ plugins =
 macos.permissions = 
 
 # mode of using nuitka. accepts standalone or onefile. default = onefile
-mode = onefile
+# standalone avoids unpacking ~170MB main.dll into %TEMP% on every launch,
+# keeps config/config.json persistent and is not blocked by AV/temp policies.
+mode = standalone
 
-# specify any extra nuitka arguments
-extra_args = --quiet --noinclude-qt-translations
+# specify any extra nuitka arguments (Nuitka options use exactly TWO dashes)
+# assets/ and config/ are loaded at runtime via relative paths (e.g. "assets/phi0.png"),
+# so they must be copied next to main.exe or the packaged app cannot display them.
+# NOTE: config/ is gitignored, so create it before building on a fresh clone.
+extra_args = --noinclude-qt-translations --include-data-dir=assets=assets --include-data-dir=config=config
 
 [buildozer]
 
